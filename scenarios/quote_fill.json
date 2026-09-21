@@ -1,0 +1,31 @@
+{
+  "id": "quote_fill",
+  "name": "批量填报（行情查价）",
+  "description": "读取业务表格的关键列，联网查询最新行情/价格，批量回填目标列，并校验写入结果。",
+  "task_examples": [
+    "把 data/报价表 目录下的报价表按照最新市场行情完成填报，并检查结果。",
+    "给物资清单里的每个项目填入最新市场价。"
+  ],
+  "plan_hints": "这是填报类任务：先扫描目录了解文件与表头，确定需要匹配的关键列和要填写的数据列；数据来源优先联网检索，检索不可用时如实说明并可退回内置参考数据（须标注来源）。",
+  "retrieval_enabled": true,
+  "writes_data": true,
+  "verification_rules": ["no_empty_required", "values_traceable", "no_hallucinated_values"],
+  "report_title": "批量填报执行报告",
+  "defaults": {
+    "item_header": "项目名称",
+    "price_header": "最新市场价"
+  },
+  "budget": {
+    "max_total_tokens": 800000,
+    "price_in_per_m": 2.0,
+    "price_out_per_m": 8.0
+  },
+  "compat": {
+    "item_header": "项目名称",
+    "item_aliases": ["项目名称", "品名", "项目", "商品名", "名称"],
+    "price_header": "最新市场价",
+    "price_aliases": ["最新市场价", "最新价格", "市场价", "单价", "价格"],
+    "search_site_hints": "惠农网 cnhnb.com、1688 等电商/行情站",
+    "value_description": "最新市场价（元）"
+  }
+}

@@ -1,0 +1,21 @@
+# 密钥 - 严禁提交
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 生成数据（备份/输出/上传/运行记录）
+data/backup/
+data/output/
+data/uploads/
+storage/
+
+# 测试用报价表数据（如不需要版本管理可保留此忽略；如需提交示例数据则删掉此行）
+data/报价表/
+
+# 系统
+Thumbs.db
+.DS_Store

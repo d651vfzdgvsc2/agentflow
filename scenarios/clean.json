@@ -1,0 +1,31 @@
+{
+  "id": "clean",
+  "name": "数据清洗 / 补全",
+  "description": "检测并处理重复记录、格式不统一、关键列缺失等问题，按规则补全缺失字段，输出清洗报告。",
+  "task_examples": [
+    "检查 data/学生信息表.xlsx，找出重复行和缺失的字段并补全。",
+    "清理表格里的重复记录和空白单元格。"
+  ],
+  "plan_hints": "这是清洗类任务：先扫描了解表结构，确定唯一键（用于判重）与必填列；补全只能补空缺、不覆盖已有值，且补全来源必须可追溯。本场景通常不需要联网。",
+  "retrieval_enabled": false,
+  "writes_data": true,
+  "verification_rules": ["no_duplicate_keys", "no_empty_required", "no_hallucinated_values"],
+  "report_title": "数据清洗报告",
+  "defaults": {
+    "key_columns": [],
+    "required_columns": []
+  },
+  "budget": {
+    "max_total_tokens": 800000,
+    "price_in_per_m": 2.0,
+    "price_out_per_m": 8.0
+  },
+  "compat": {
+    "item_header": "编号",
+    "item_aliases": ["编号", "学号", "ID", "id", "姓名", "名称"],
+    "price_header": "备注",
+    "price_aliases": ["备注", "说明", "状态"],
+    "search_site_hints": "",
+    "value_description": ""
+  }
+}

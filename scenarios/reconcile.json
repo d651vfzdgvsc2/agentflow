@@ -1,0 +1,31 @@
+{
+  "id": "reconcile",
+  "name": "多表核对 / 对账",
+  "description": "按关键列比对两张表，找出仅单边存在、字段不一致、重复键等问题，并生成差异报告。",
+  "task_examples": [
+    "核对 data/对账 目录下的两张表，按订单号找出金额不一致和只在一方存在的记录，生成差异报告。",
+    "比对 表A.xlsx 和 表B.xlsx，按编号找出差异。"
+  ],
+  "plan_hints": "这是核对类任务：先扫描目录了解文件和表头，确定关键列（用于匹配的列，如订单号/编号）与需要比对的字段列；本场景不需要联网检索。",
+  "retrieval_enabled": false,
+  "writes_data": false,
+  "verification_rules": ["no_duplicate_keys", "diff_consistency", "no_hallucinated_values"],
+  "report_title": "多表核对差异报告",
+  "defaults": {
+    "key_columns": [],
+    "compare_columns": []
+  },
+  "budget": {
+    "max_total_tokens": 800000,
+    "price_in_per_m": 2.0,
+    "price_out_per_m": 8.0
+  },
+  "compat": {
+    "item_header": "编号",
+    "item_aliases": ["编号", "订单号", "单号", "ID", "id", "名称", "项目名称"],
+    "price_header": "金额",
+    "price_aliases": ["金额", "余额", "数量", "单价"],
+    "search_site_hints": "",
+    "value_description": ""
+  }
+}

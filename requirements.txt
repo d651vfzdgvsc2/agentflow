@@ -1,0 +1,7 @@
+mcp>=2.0.0
+openpyxl>=3.1.0
+openai>=2.0.0
+python-dotenv>=1.0.0
+flask>=3.0.0
+# 联网搜索备用通道（可选）：pip install ddgs
+ddgs>=9.0.0

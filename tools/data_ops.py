@@ -119,16 +119,20 @@ def diff_tables(
         for col in compare_columns:
             lv, rv = _norm(lrec.get(col)), _norm(rrec.get(col))
             if lv != rv:
-                mismatches.append({"key": list(k), "column": col, "left": lv, "right": rv})
+                mismatches.append({"key": list(k), "column": col, "left": lv, "right": rv,
+                                   "left_row": lrec, "right_row": rrec})
 
     return {
         "status": "ok",
         "key_columns": key_columns,
         "compare_columns": compare_columns,
+        "header": left["header"],
         "left": {"file": left["file"], "sheet": left["sheet"], "rows": len(left["records"])},
         "right": {"file": right["file"], "sheet": right["sheet"], "rows": len(right["records"])},
         "only_in_left": [list(k) for k in only_left],
+        "only_in_left_rows": [li[k][0] for k in only_left],
         "only_in_right": [list(k) for k in only_right],
+        "only_in_right_rows": [ri[k][0] for k in only_right],
         "duplicate_keys_left": dup_left,
         "duplicate_keys_right": dup_right,
         "value_mismatches": mismatches,

@@ -49,7 +49,9 @@ def _fetch(url: str, timeout: int = 10) -> str:
     import random
 
     req = urllib.request.Request(url, headers={"User-Agent": random.choice(_USER_AGENTS)})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    # 直连：忽略系统代理（本地代理没开会把请求带崩）
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="ignore")
 
 

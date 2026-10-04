@@ -50,9 +50,12 @@ class DeepSeekClient:
     """OpenAI 兼容客户端（DeepSeek / 可换 base_url 指向其它兼容服务）。"""
 
     def __init__(self, api_key: str, base_url: str, model: str) -> None:
+        import httpx  # noqa: PLC0415
         from openai import OpenAI  # 懒加载：只有真正用真实模型时才需要 openai
 
-        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        # 直连：忽略系统代理环境变量（本地代理没开会导致 Connection error）
+        self._client = OpenAI(api_key=api_key, base_url=base_url,
+                              http_client=httpx.Client(trust_env=False))
         self.model = model
 
     def chat(

@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-title AgentFlow 快速启动
+title AgentFlow 一键启动
 echo ============================================================
 echo   AgentFlow - 多 Agent 协同办公数据处理平台
 echo   Planner / Retrieval / Executor / Verifier / Reporter
@@ -17,7 +17,7 @@ if errorlevel 1 (
 
 if not exist ".env" (
   copy ".env.example" ".env" >nul
-  echo [!] 未找到 .env，已生成模板。请填入 DEEPSEEK_API_KEY 后重新运行。
+  echo [!] 未找到 .env，已生成模板。请在记事本里填入 DEEPSEEK_API_KEY，保存后重新运行。
   start "" notepad ".env"
   pause
   exit /b 1
@@ -31,24 +31,22 @@ if not errorlevel 1 (
   exit /b 1
 )
 
-echo [1/3] 检查依赖...
-python -m pip install -r requirements.txt -q --disable-pip-version-check
+echo [检查依赖] ...
+python -c "import flask, openpyxl, dotenv" >nul 2>nul
 if errorlevel 1 (
-  echo [!] 依赖安装未成功（可能离线或已安装）。若稍后启动报缺少模块，请手动执行：
-  echo     python -m pip install -r requirements.txt
-  echo.
+  echo     首次运行：安装依赖（之后启动会跳过这步）...
+  python -m pip install -r requirements.txt -q --disable-pip-version-check
 )
 
-echo [2/3] 生成演示数据（对账 / 清洗）...
-python -X utf8 make_demo_data.py
-if errorlevel 1 (
-  echo [!] 演示数据生成失败
-  pause
-  exit /b 1
+if not exist "data\对账\银行流水.xlsx" (
+  echo [生成演示数据] ...
+  python -X utf8 make_demo_data.py
 )
 
-echo [3/3] 启动 Web 界面： http://127.0.0.1:8000
-echo     关闭本窗口即停止服务。
+echo ============================================================
+echo   启动 Web 面板： http://127.0.0.1:8000
+echo   浏览器会自动打开；关闭本窗口即停止服务
+echo ============================================================
 echo.
 start "" http://127.0.0.1:8000
 python -X utf8 webui.py

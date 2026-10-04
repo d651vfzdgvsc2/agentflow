@@ -229,6 +229,109 @@ def fill_missing(
     }
 
 
+def merge_complete(
+    left_file: str,
+    right_file: str,
+    key_columns: list[str] | None = None,
+    compare_columns: list[str] | None = None,
+    left_sheet: str | None = None,
+    right_sheet: str | None = None,
+    base_dir: str | None = None,
+) -> dict[str, Any]:
+    """按关键列把两张表合并成一张"完整表"（以左表=基准为准）。
+
+    规则（可追溯、不改原表）：
+    - 左表为基准，行顺序保持不变；
+    - 左表**空**单元格用右表同键的值补全（只补空，绝不覆盖已有值）；
+    - 右表独有的键，追加到结果末尾，并在「来源」列标注；
+    - 结果写到 data/output/ 下的**新文件**，不动任何原始表。
+    """
+    from openpyxl import Workbook
+
+    left = read_records(left_file, left_sheet, base_dir)
+    if "error" in left:
+        return {"error": f"左表读取失败: {left['error']}"}
+    right = read_records(right_file, right_sheet, base_dir)
+    if "error" in right:
+        return {"error": f"右表读取失败: {right['error']}"}
+
+    key_columns = key_columns or [left["header"][0]]
+
+    # 表头：先左后右，合并去重，末尾加「来源」
+    header = list(left["header"])
+    for h in right["header"]:
+        if h not in header:
+            header.append(h)
+    src_col = "来源"
+    if src_col in header:
+        src_col = "来源(合并)"
+    header_out = header + [src_col]
+
+    def _key(rec: dict) -> tuple:
+        return tuple(_norm(rec.get(k)) for k in key_columns)
+
+    ridx: dict[tuple, dict] = {}
+    for r in right["records"]:
+        ridx.setdefault(_key(r), r)
+
+    filled: list[dict] = []
+    out_rows: list[dict] = []
+    left_keys = set()
+
+    for lr in left["records"]:
+        k = _key(lr)
+        left_keys.add(k)
+        row = {h: lr.get(h) for h in header}
+        rr = ridx.get(k)
+        if rr:
+            for h in header:
+                lv, rv = row.get(h), rr.get(h)
+                if (lv is None or str(lv).strip() == "") and rv is not None and str(rv).strip() != "":
+                    row[h] = rv
+                    filled.append({"key": list(k), "column": h, "value": rv})
+        row[src_col] = "基准表"
+        out_rows.append(row)
+
+    added: list[list] = []
+    for rr in right["records"]:
+        k = _key(rr)
+        if k in left_keys:
+            continue
+        row = {h: rr.get(h) for h in header}
+        row[src_col] = "仅待核对表"
+        out_rows.append(row)
+        added.append(list(k))
+
+    # 写新文件（绝不改原表）
+    import time
+
+    out_dir = DEFAULT_DIR / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"合并补齐_{time.strftime('%Y%m%d_%H%M%S')}.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "合并结果"
+    ws.append(header_out)
+    for row in out_rows:
+        ws.append([_safe(row.get(h)) for h in header_out])
+    wb.save(out_path)
+    wb.close()
+
+    return {
+        "status": "ok",
+        "output": str(out_path),
+        "output_name": out_path.name,
+        "key_columns": key_columns,
+        "header": header_out,
+        "rows": len(out_rows),
+        "base_rows": len(left["records"]),
+        "added_from_right": len(added),
+        "added_keys": added[:200],
+        "filled_count": len(filled),
+        "filled": filled[:200],
+    }
+
+
 def list_sheets(file_name: str, base_dir: str | None = None) -> dict[str, Any]:
     """列出文件里的所有 sheet 名。"""
     path = _resolve_path(file_name, base_dir)
@@ -238,4 +341,5 @@ def list_sheets(file_name: str, base_dir: str | None = None) -> dict[str, Any]:
 
 
 # 兼容：DEFAULT_DIR 从 excel_ops 再导出，方便调用方统一入口
-__all__ = ["read_records", "diff_tables", "find_duplicates", "fill_missing", "list_sheets", "DEFAULT_DIR"]
+__all__ = ["read_records", "diff_tables", "find_duplicates", "fill_missing",
+           "merge_complete", "list_sheets", "DEFAULT_DIR"]

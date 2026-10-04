@@ -47,6 +47,11 @@ READ_RULES = """1. 本场景只读：系统未开放任何写类工具，禁止�
 
 CLEAN_HINT = """本场景为数据清洗：补全只能补空缺、不能覆盖已有值；补全来源必须可追溯；重复记录只标记不擅自删除。"""
 
+CLEAN_RULES = """1. 本场景只允许「补空缺」：仅能用 fill_missing，把已有可追溯来源的值填进空单元格，严禁覆盖已有值。
+2. 严禁新增列/新增行，严禁把报告、标记、说明写进数据表——清洗结论由系统单独生成（report.md）。
+3. 找不到可追溯来源的缺失项，一律不填、不猜，留给报告。
+4. 完成后简要说明：发现多少重复、多少缺失、补了多少。"""
+
 RECONCILE_HINT = """本场景为核对/对账：只做确定性比对，不修改任何数据。"""
 
 
@@ -70,8 +75,14 @@ class ExecutorAgent(BaseAgent):
             rules = READ_RULES
             tool_names = ["inspect_excel", "read_table", "find_rows", "list_sheets",
                           "diff_tables", "find_duplicates"]
+        elif task_type == "clean":
+            # 清洗只读 + 仅允许 fill_missing：杜绝把"报告/标记"写回数据表造成污染
+            mode_hint = CLEAN_HINT
+            rules = CLEAN_RULES
+            tool_names = ["inspect_excel", "read_table", "find_rows", "list_sheets",
+                          "find_duplicates", "fill_missing", "verify_excel"]
         else:
-            mode_hint = CLEAN_HINT if task_type == "clean" else ""
+            mode_hint = ""
             rules = WRITE_RULES
             tool_names = [
                 "inspect_excel", "read_table", "find_rows", "list_sheets", "verify_excel",

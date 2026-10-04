@@ -9,11 +9,11 @@
   "plan_hints": "这是清洗类任务：先扫描了解表结构，确定唯一键（用于判重）与必填列；补全只能补空缺、不覆盖已有值，且补全来源必须可追溯。本场景通常不需要联网。",
   "retrieval_enabled": false,
   "writes_data": true,
-  "verification_rules": ["no_duplicate_keys", "no_empty_required", "no_hallucinated_values"],
+  "verification_rules": ["no_duplicate_keys", "no_empty_required", "no_hallucinated_values", "clean_missing_fields"],
   "report_title": "数据清洗报告",
   "defaults": {
     "key_columns": [],
-    "required_columns": []
+    "required_columns": ["姓名", "电话"]
   },
   "budget": {
     "max_total_tokens": 800000,

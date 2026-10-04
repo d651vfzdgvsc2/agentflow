@@ -81,6 +81,49 @@ def rule_no_empty_required(ctx, bb: Blackboard) -> list[Finding]:
     return findings
 
 
+def rule_clean_missing_fields(ctx, bb: Blackboard) -> list[Finding]:
+    """清洗场景：扫描目标表，报告"必填列"里的空单元格（缺失字段）。
+
+    只报告、不修改；补全动作由 Executor 的 fill_missing 完成（且只补空、不覆盖）。
+    required_columns 未配置或与表头对不上时，退化为检查全部列。
+    """
+    from pathlib import Path
+
+    plan = bb.get("plan") or {}
+    files = plan.get("target_files") or []
+    required = plan.get("required_columns") or (ctx.scenario.defaults.get("required_columns") or [])
+    findings: list[Finding] = []
+
+    def _check(f: str):
+        return f, ctx.registry.call("read_table", {"file_name": f})
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    if len(files) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(files))) as ex:
+            checked = list(ex.map(_check, files))
+    else:
+        checked = [_check(f) for f in files]
+
+    for f, res in checked:
+        if "error" in res:
+            findings.append({"rule": "clean_missing_fields", "severity": "warning",
+                             "message": f"读取失败: {res['error']}", "file": f})
+            continue
+        header = res.get("header") or []
+        cols = [c for c in required if c in header] or header
+        for rec, rn in zip(res.get("records") or [], res.get("row_numbers") or []):
+            for c in cols:
+                v = rec.get(c)
+                if v is None or str(v).strip() == "":
+                    findings.append({"rule": "clean_missing_fields", "severity": "warning",
+                                     "message": f"{Path(f).name} 第{rn}行「{c}」为空",
+                                     "file": f, "row": rn, "column": c})
+    if not findings:
+        findings.append({"rule": "clean_missing_fields", "severity": "info", "message": "未发现缺失字段"})
+    return findings
+
+
 def rule_values_traceable(ctx, bb: Blackboard) -> list[Finding]:
     """每个写入的值都要能对应到一条带来源的检索结果。"""
     collected = _sourced_map(bb)
@@ -146,6 +189,7 @@ def rule_diff_consistency(ctx, bb: Blackboard) -> list[Finding]:
 RULES: dict[str, Callable[..., list[Finding]]] = {
     "no_duplicate_keys": rule_no_duplicate_keys,
     "no_empty_required": rule_no_empty_required,
+    "clean_missing_fields": rule_clean_missing_fields,
     "values_traceable": rule_values_traceable,
     "no_hallucinated_values": rule_no_hallucinated_values,
     "diff_consistency": rule_diff_consistency,

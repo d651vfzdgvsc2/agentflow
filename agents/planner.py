@@ -31,6 +31,7 @@ PLANNER_PROMPT = """你是「智能办公数据处理平台」的规划 Agent（
   "target_files": ["可直接使用的文件路径列表"],
   "key_columns": ["用于匹配/判重的列名"],
   "compare_columns": ["需要比对或处理的列名"],
+  "required_columns": ["清洗场景的必填列（用于检查缺失字段）；非清洗场景可留空"],
   "actions": ["按顺序描述将要执行的步骤"],
   "note": "对用户的重要提醒"
 }}
@@ -92,6 +93,7 @@ class PlannerAgent(BaseAgent):
         plan.setdefault("needs_retrieval", bool(scenario.retrieval_enabled))
         plan.setdefault("key_columns", list(scenario.defaults.get("key_columns") or []))
         plan.setdefault("compare_columns", list(scenario.defaults.get("compare_columns") or []))
+        plan.setdefault("required_columns", list(scenario.defaults.get("required_columns") or []))
         plan.setdefault("actions", [])
         plan.setdefault("note", "")
 

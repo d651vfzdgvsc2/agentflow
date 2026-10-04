@@ -15,7 +15,7 @@ import threading
 import traceback
 from pathlib import Path
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
@@ -169,6 +169,8 @@ def api_progress():
             "approval": orch.bb.get("approval") or {},
             "usage": orch.budget.summary(),
             "findings": orch.bb.get("findings") or [],
+            "verifications": orch.bb.get("verifications") or [],
+            "duplicates": orch.bb.get("duplicates"),
             "diff": orch.bb.get("diff"),
             "writes": orch.bb.get("writes") or [],
             "error": run.get("error"),
@@ -189,6 +191,103 @@ def api_report():
     if not path or not Path(path).exists():
         return jsonify({"error": "报告尚未生成"}), 404
     return jsonify({"path": path, "markdown": Path(path).read_text(encoding="utf-8")})
+
+
+@app.route("/api/results")
+def api_results():
+    """列出本次运行产生的结果文件（供前端逐个给出直链下载）。"""
+    run_id = request.args.get("run_id", "")
+    with LOCK:
+        run = RUNS.get(run_id)
+    if not run:
+        return jsonify({"error": "run_id 不存在"}), 404
+    from core.package import result_files
+
+    files = result_files(run["orch"].bb)
+    return jsonify({"files": [{"i": k, "name": p.name, "size": p.stat().st_size}
+                              for k, p in enumerate(files)]})
+
+
+@app.route("/api/download")
+def api_download():
+    """下载某个结果文件（永远直接给 xlsx，绝不打包）。"""
+    run_id = request.args.get("run_id", "")
+    with LOCK:
+        run = RUNS.get(run_id)
+    if not run:
+        return jsonify({"error": "run_id 不存在"}), 404
+    from core.package import result_files
+
+    files = result_files(run["orch"].bb)
+    if not files:
+        return jsonify({"error": "该任务没有写出文件，暂无可下载的结果"}), 404
+    i = request.args.get("i")
+    if i is not None:
+        try:
+            idx = int(i)
+        except ValueError:
+            return jsonify({"error": "i 必须是整数"}), 400
+        if idx < 0 or idx >= len(files):
+            return jsonify({"error": "文件序号越界"}), 404
+        p = files[idx]
+    elif len(files) == 1:
+        p = files[0]
+    else:
+        return jsonify({"error": "有多个结果文件，请指定 i 分别下载"}), 409
+    return send_file(str(p), as_attachment=True, download_name=p.name)
+
+
+@app.route("/api/preview")
+def api_preview():
+    """预览某个已上传 Excel 的前几行（只允许 data 目录内的文件）。"""
+    rel = request.args.get("path", "")
+    data_root = config.DATA_DIR.resolve()
+    p = (config.DATA_DIR / rel).resolve()
+    try:
+        p.relative_to(data_root)
+    except ValueError:
+        return jsonify({"error": "非法路径"}), 400
+    if not p.exists() or p.suffix.lower() not in {".xlsx", ".xlsm"}:
+        return jsonify({"error": "文件不存在或不是 Excel"}), 404
+    from excel_ops import inspect_excel
+
+    info = inspect_excel(str(p))
+    if "error" in info:
+        return jsonify(info), 400
+    return jsonify({"file": p.name, "sheets": info["sheets"]})
+
+
+@app.route("/api/autofill", methods=["POST"])
+def api_autofill():
+    """按基准表合并补齐：把对账的两张表合并成一张完整表（只补空、不改原表）。"""
+    data = request.get_json(force=True) or {}
+    run_id = data.get("run_id", "")
+    with LOCK:
+        run = RUNS.get(run_id)
+    if not run:
+        return jsonify({"error": "run_id 不存在"}), 404
+    bb = run["orch"].bb
+    diff = bb.get("diff")
+    plan = bb.get("plan") or {}
+    if diff:
+        left_file = (diff.get("left") or {}).get("file")
+        right_file = (diff.get("right") or {}).get("file")
+        keys = diff.get("key_columns") or plan.get("key_columns")
+        compare = diff.get("compare_columns") or plan.get("compare_columns")
+    else:
+        files = plan.get("target_files") or []
+        if len(files) != 2:
+            return jsonify({"error": "需要两张表才能按基准合并（当前没有可比对的差异结果）"}), 400
+        left_file, right_file = files[0], files[1]
+        keys = plan.get("key_columns")
+        compare = plan.get("compare_columns")
+    from tools.data_ops import merge_complete
+
+    res = merge_complete(left_file, right_file, keys, compare)
+    if "error" in res:
+        return jsonify(res), 400
+    bb.set("merged", res)
+    return jsonify(res)
 
 
 @app.route("/api/upload", methods=["POST"])
@@ -286,6 +385,7 @@ PAGE = r"""<!DOCTYPE html>
     <label>场景模板</label>
     <select id="scenario"></select>
     <div id="uploadArea"></div>
+    <div id="fileList"></div>
     <div style="font-weight:800;font-size:17px;margin-top:14px">⏱ 已用时：<span id="timer">0s</span> <span style="font-weight:600;color:#a33;font-size:14px">（点「生成计划」后开始计时）</span></div>
     <label>任务描述</label>
     <textarea id="task" placeholder="例如：核对 data/对账 目录下的两张表，按订单号找出差异并生成报告"></textarea>
@@ -298,6 +398,7 @@ PAGE = r"""<!DOCTYPE html>
 
   <div class="panel col2">
     <h2>结果
+      <button id="btnMerge" class="ghost" disabled title="把对账的两张表按基准合并、补齐成一张完整表">按基准合并补齐</button>
       <span class="tabs">
         <button class="tab active" data-tab="diff">差异/结果</button>
         <button class="tab" data-tab="steps">实时轨迹</button>
@@ -312,13 +413,26 @@ PAGE = r"""<!DOCTYPE html>
   </div>
 
   <div class="panel col3">
-    <h2>执行报告 <button id="btnReport" class="ghost">刷新报告</button></h2>
+    <h2>执行报告
+      <span><span id="dlArea"></span>
+      <button id="btnReport" class="ghost">刷新报告</button></span>
+    </h2>
     <div class="scroll"><pre id="report">执行结束后自动显示。</pre></div>
   </div>
 </div>
 
+<div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99;align-items:center;justify-content:center">
+  <div style="background:#fff;border:3px solid #000;max-width:1000px;width:80vw;max-height:82vh;overflow:auto;padding:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <b id="mtitle" style="font-size:18px"></b>
+      <button class="ghost" type="button" onclick="closeModal()">关闭</button>
+    </div>
+    <div id="mbody"></div>
+  </div>
+</div>
+
 <script>
-let runId=null, timer=null, t0=0, running=false, uploaded=[];
+let runId=null, timer=null, t0=0, running=false, uploaded=[], mergedInfo=null;
 const $=id=>document.getElementById(id);
 // 独立计时器：只要点过“生成计划/确认执行”，就每 0.2 秒刷新一次用时
 setInterval(()=>{ if(running) $('timer').textContent=Math.floor((Date.now()-t0)/1000)+'s'; }, 200);
@@ -347,7 +461,8 @@ if(presetRun){
 
 $('btnPlan').onclick=async()=>{
   const task=$('task').value.trim(); if(!task){alert('请填写任务');return;}
-  $('btnPlan').disabled=true; $('status').textContent='规划中…'; $('status').className='tag';
+  $('btnPlan').disabled=true; $('dlArea').innerHTML=''; $('btnMerge').disabled=true; mergedInfo=null;
+  $('status').textContent='规划中…'; $('status').className='tag';
   t0=Date.now(); running=true; $('timer').textContent='0s';
   $('steps').innerHTML='—'; $('agents').innerHTML='—'; $('diff').innerHTML='—'; $('report').textContent='执行结束后自动显示…';
   try{
@@ -383,6 +498,33 @@ async function loadReport(){
   }catch(e){}
 }
 $('btnReport').onclick=loadReport;
+async function loadResults(){
+  if(!runId)return;
+  try{
+    const r=await fetch('/api/results?run_id='+encodeURIComponent(runId));
+    const d=await r.json();
+    const area=$('dlArea');
+    if(!d.files||!d.files.length){area.innerHTML='';return;}
+    if(d.files.length===1){
+      area.innerHTML='<a style="border:2px solid #000;padding:6px 12px;text-decoration:none;font-weight:800;color:#000" href="/api/download?run_id='+encodeURIComponent(runId)+'">下载 '+esc(d.files[0].name)+'</a>';
+    }else{
+      area.innerHTML='下载结果文件：'+d.files.map(f=>'<a style="margin:0 8px" href="/api/download?run_id='+encodeURIComponent(runId)+'&i='+f.i+'">'+esc(f.name)+'</a>').join('');
+    }
+  }catch(e){}
+}
+$('btnMerge').onclick=async()=>{
+  if(!runId)return;
+  const btn=$('btnMerge'); btn.disabled=true; btn.textContent='合并中…';
+  try{
+    const r=await fetch('/api/autofill',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({run_id:runId})});
+    const d=await r.json();
+    if(d.error){alert(d.error);return;}
+    mergedInfo=d; loadResults();
+    const dh=$('diff'); dh.innerHTML=(dh.innerHTML==='—'?'':dh.innerHTML)+renderMerge(mergedInfo);
+  }catch(e){alert(e);}
+  finally{btn.textContent='按基准合并补齐';}
+};
 
 document.querySelectorAll('.tab').forEach(b=>{
   b.onclick=()=>{
@@ -402,6 +544,7 @@ async function doUpload(file){
 function renderUpload(sid){
   const area=$('uploadArea');
   uploaded=[];
+  renderFileList();
   if(sid==='reconcile'){
     area.innerHTML=
       '<label>原版 / 基准表</label>'+
@@ -436,7 +579,9 @@ async function uploadPicked(files,isDir){
   const d=await r.json();
   if(d.error){$('upmsg').textContent=d.error;return;}
   uploaded=d.files.map(n=>d.rel_dir+'/'+n);
-  $('upmsg').textContent='已上传 '+d.files.length+' 个文件 → '+d.rel_dir+'（已锁定，无需手写路径）';
+  renderFileList();
+  $('upmsg').innerHTML='已上传 '+d.files.length+' 个文件（已锁定，只处理这些）：<br>'
+    +d.files.map(n=>'· '+esc(n)).join('<br>');
   const sid=$('scenario').value;
   const scope=d.files.length===1?(d.rel_dir+'/'+d.files[0]):d.rel_dir;
   if(sid==='clean'){
@@ -454,8 +599,36 @@ async function uploadReconcile(){
   if(da.error||db.error){$('upmsg').textContent=(da.error||db.error);return;}
   $('upmsg').textContent='已上传 2 个文件';
   uploaded=[da.rel,db.rel];
+  renderFileList();
   $('task').value='核对 '+da.rel+'（原版/基准）与 '+db.rel+'（待核对），找出只在单方存在、字段不一致和重复的记录，生成差异报告。';
 }
+
+function renderFileList(){
+  const box=$('fileList');
+  if(!uploaded.length){box.innerHTML='';return;}
+  box.innerHTML='<div style="margin-top:8px;font-weight:800">已上传文件（点文件名预览）：</div>'
+    +uploaded.map((p,i)=>'<div class="step" data-i="'+i+'" style="cursor:pointer;padding:6px 10px">📄 '+esc(p.split('/').pop())+' <span style="color:#555;font-size:14px">'+esc(p)+'</span></div>').join('');
+  box.querySelectorAll('[data-i]').forEach(el=>{el.onclick=()=>previewFile(uploaded[+el.dataset.i]);});
+}
+async function previewFile(rel){
+  openModal(rel.split('/').pop());
+  $('mbody').innerHTML='加载中…';
+  try{
+    const r=await fetch('/api/preview?path='+encodeURIComponent(rel));
+    const d=await r.json();
+    if(d.error){$('mbody').textContent=d.error;return;}
+    let h='';
+    (d.sheets||[]).forEach(s=>{
+      h+='<div class="dhead">工作表：'+esc(s.name)+'（共 '+s.max_row+' 行）</div>';
+      h+='<table><tr>'+((s.header||[]).map(c=>'<th>'+esc(c)+'</th>').join(''))+'</tr>'
+        +((s.preview||[]).map(row=>'<tr>'+((s.header||[]).map((c,i)=>'<td>'+esc(row[i])+'</td>')).join('')+'</tr>').join(''))
+        +'</table>';
+    });
+    $('mbody').innerHTML=h||'（空表）';
+  }catch(e){$('mbody').textContent='预览失败：'+e;}
+}
+function openModal(title){$('mtitle').textContent='预览：'+title;$('modal').style.display='flex';}
+function closeModal(){$('modal').style.display='none';}
 
 function cls(s){return s.agent==='verifier'?'':(s.ok?'':'bad');}
 function renderWrites(writes){
@@ -482,6 +655,31 @@ function renderFindings(findings){
     const msg=f.message||f.detail||(f.item?('条目「'+f.item+'」'+(f.value!==undefined?'：'+f.value:'')):'');
     h+='<div class="step '+(f.severity==='error'?'bad':'')+'">'+(rule?('['+esc(rule)+'] '):'')+esc(msg)+'</div>';
   });
+  return h;
+}
+function renderMerge(m){
+  if(!m||m.status!=='ok')return '';
+  let h='<div class="dhead">按基准合并补齐（已生成完整表）</div>';
+  h+='<div>合并后共 <b>'+m.rows+'</b> 行：基准表 '+m.base_rows+' 行，另追加 '+(m.added_from_right||0)+' 行（仅待核对表）；补全空字段 '+(m.filled_count||0)+' 处。</div>';
+  h+='<div style="margin:4px 0">输出文件：<b>'+esc(m.output_name)+'</b>（右上角「下载结果文件」可取）</div>';
+  if(m.filled&&m.filled.length){
+    h+='<table><tr><th>关键值</th><th>补全列</th><th>从另一表补入的值</th></tr>'
+      +m.filled.slice(0,100).map(f=>'<tr><td>'+esc([].concat(f.key).join(' / '))+'</td><td>'+esc(f.column)+'</td><td>'+esc(f.value)+'</td></tr>').join('')+'</table>';
+  }else{
+    h+='<div>（没有可补的空字段）</div>';
+  }
+  if(m.added_keys&&m.added_keys.length){
+    h+='<div class="dhead">追加的键（仅待核对表存在）</div><div>'+m.added_keys.map(k=>esc([].concat(k).join(' / '))).join('、')+'</div>';
+  }
+  return h;
+}
+function renderDuplicates(dup){
+  let h='<div class="dhead">重复记录（按关键列判重）</div>';
+  const groups=(dup&&dup.duplicate_groups)||[];
+  if(!groups.length){h+='<div>未发现重复记录</div>';return h;}
+  h+='<table><tr><th>关键值</th><th>重复所在行</th></tr>'
+    +groups.map(g=>'<tr><td>'+esc([].concat(g.key).join(' / '))+'</td><td>'+esc((g.rows||[]).join(', '))+'</td></tr>').join('')
+    +'</table>';
   return h;
 }
 function startPolling(){
@@ -536,9 +734,15 @@ function startPolling(){
       dh+=h;
     }
     if(d.writes&&d.writes.length){dh+=renderWrites(d.writes);}
+    if(d.duplicates&&$('scenario').value==='clean'){dh+=renderDuplicates(d.duplicates);}
     if(d.findings&&d.findings.length){dh+=renderFindings(d.findings);}
+    if(mergedInfo){dh+=renderMerge(mergedInfo);}
     $('diff').innerHTML=dh||'—';
-    if(['done','cancelled','budget_exceeded','error'].includes(d.status)){running=false;$('timer').textContent=Math.floor((Date.now()-t0)/1000)+'s';clearInterval(timer);timer=null;loadReport();}
+    if(['done','cancelled','budget_exceeded','error'].includes(d.status)){
+      running=false;$('timer').textContent=Math.floor((Date.now()-t0)/1000)+'s';clearInterval(timer);timer=null;loadReport();
+      if(['done','budget_exceeded'].includes(d.status))loadResults();
+      if(d.diff)$('btnMerge').disabled=false;
+    }
   },1000);
 }
 </script>

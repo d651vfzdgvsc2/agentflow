@@ -37,7 +37,8 @@ EXEC_LOCK = threading.Lock()
 MAX_RUNS = 20
 
 
-def _new_run(scenario_id: str, task: str, dry_run: bool) -> tuple[str, Orchestrator]:
+def _new_run(scenario_id: str, task: str, dry_run: bool,
+             forced_files: list[str] | None = None) -> tuple[str, Orchestrator]:
     scenario = load_scenario(scenario_id)
     budget_cfg = scenario.budget or {}
     budget = TokenBudget(
@@ -64,6 +65,7 @@ def _new_run(scenario_id: str, task: str, dry_run: bool) -> tuple[str, Orchestra
         task=task, scenario=scenario, llm=llm,
         app_config=AppConfig(dry_run=dry_run),
         on_event=on_event, run_id=run_id,
+        forced_files=forced_files,
     )
     with LOCK:
         if len(RUNS) >= MAX_RUNS:
@@ -91,10 +93,11 @@ def api_plan():
     task = (data.get("task") or "").strip()
     scenario_id = data.get("scenario") or config.DEFAULT_SCENARIO
     dry_run = bool(data.get("dry_run"))
+    forced_files = [str(f) for f in (data.get("target_files") or []) if str(f).strip()]
     if not task:
         return jsonify({"error": "请填写任务描述"}), 400
     try:
-        run_id, orch = _new_run(scenario_id, task, dry_run)
+        run_id, orch = _new_run(scenario_id, task, dry_run, forced_files)
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": f"初始化失败: {e}"}), 500
 
@@ -190,18 +193,30 @@ def api_report():
 
 @app.route("/api/upload", methods=["POST"])
 def api_upload():
-    f = request.files.get("file")
-    if not f or not f.filename:
+    files = request.files.getlist("file") + request.files.getlist("files")
+    files = [f for f in files if f and f.filename]
+    if not files:
         return jsonify({"error": "没有收到文件"}), 400
-    name = Path(f.filename).name
-    if not name.lower().endswith((".xlsx", ".xlsm")):
-        return jsonify({"error": "只支持 .xlsx / .xlsm 文件"}), 400
-    dest_dir = config.DATA_DIR / "上传"
+    # 目录名安全化：只取最后一段，避免 ../ 之类的路径逃逸
+    folder = Path((request.form.get("folder") or "").strip()).name
+    dest_dir = config.DATA_DIR / "上传" / folder if folder else config.DATA_DIR / "上传"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / name
-    f.save(str(dest))
-    rel = f"上传/{name}"
-    return jsonify({"ok": True, "file": name, "rel": rel, "path": str(dest)})
+    saved = []
+    for f in files:
+        name = Path(f.filename).name
+        if not name.lower().endswith((".xlsx", ".xlsm")):
+            continue
+        f.save(str(dest_dir / name))
+        saved.append(name)
+    if not saved:
+        return jsonify({"error": "只支持 .xlsx / .xlsm 文件"}), 400
+    rel_dir = f"上传/{folder}" if folder else "上传"
+    return jsonify({
+        "ok": True, "files": saved, "folder": folder, "rel_dir": rel_dir,
+        # 兼容旧的单文件字段
+        "file": saved[0], "rel": f"{rel_dir}/{saved[0]}",
+        "path": str(dest_dir / saved[0]),
+    })
 
 
 @app.route("/")
@@ -303,7 +318,7 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 
 <script>
-let runId=null, timer=null, t0=0, running=false;
+let runId=null, timer=null, t0=0, running=false, uploaded=[];
 const $=id=>document.getElementById(id);
 // 独立计时器：只要点过“生成计划/确认执行”，就每 0.2 秒刷新一次用时
 setInterval(()=>{ if(running) $('timer').textContent=Math.floor((Date.now()-t0)/1000)+'s'; }, 200);
@@ -337,7 +352,7 @@ $('btnPlan').onclick=async()=>{
   $('steps').innerHTML='—'; $('agents').innerHTML='—'; $('diff').innerHTML='—'; $('report').textContent='执行结束后自动显示…';
   try{
     const r=await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({task,scenario:$('scenario').value,dry_run:false})});
+      body:JSON.stringify({task,scenario:$('scenario').value,dry_run:false,target_files:uploaded})});
     const d=await r.json();
     if(d.error){alert(d.error);$('status').textContent='失败';running=false;return;}
     runId=d.run_id;
@@ -386,6 +401,7 @@ async function doUpload(file){
 
 function renderUpload(sid){
   const area=$('uploadArea');
+  uploaded=[];
   if(sid==='reconcile'){
     area.innerHTML=
       '<label>原版 / 基准表</label>'+
@@ -397,14 +413,36 @@ function renderUpload(sid){
       '<span id="upmsg" style="font-size:15px"></span></div>';
     $('btnUpload2').onclick=uploadReconcile;
   }else{
-    const label = sid==='clean' ? '上传要清洗的 Excel' : '上传 Excel';
+    const label = sid==='clean' ? '要清洗的表格' : '报价表';
     area.innerHTML=
-      '<label>'+label+'</label>'+
-      '<input type="file" id="fileS" accept=".xlsx,.xlsm" style="font-size:15px">'+
-      '<div class="row" style="margin-top:10px">'+
-      '<button class="ghost" type="button" id="btnUpload1">上传</button>'+
-      '<span id="upmsg" style="font-size:15px"></span></div>';
-    $('btnUpload1').onclick=uploadSingle;
+      '<label>选择文件夹（整个目录上传）</label>'+
+      '<input type="file" id="dirS" webkitdirectory directory multiple style="font-size:15px">'+
+      '<label style="margin-top:6px">或选择文件（可多选）</label>'+
+      '<input type="file" id="fileS" accept=".xlsx,.xlsm" multiple style="font-size:15px">'+
+      '<div class="row" style="margin-top:8px"><span id="upmsg" style="font-size:15px">选好即自动上传并锁定处理范围</span></div>';
+    $('dirS').onchange=()=>uploadPicked($('dirS').files,true);
+    $('fileS').onchange=()=>uploadPicked($('fileS').files,false);
+  }
+}
+
+async function uploadPicked(files,isDir){
+  if(!files||!files.length)return;
+  const folder=isDir?((files[0].webkitRelativePath||'').split('/')[0]||'上传批次'):'';
+  const fd=new FormData();
+  for(const f of files) fd.append('file',f);
+  if(folder) fd.append('folder',folder);
+  $('upmsg').textContent='上传中…';
+  const r=await fetch('/api/upload',{method:'POST',body:fd});
+  const d=await r.json();
+  if(d.error){$('upmsg').textContent=d.error;return;}
+  uploaded=d.files.map(n=>d.rel_dir+'/'+n);
+  $('upmsg').textContent='已上传 '+d.files.length+' 个文件 → '+d.rel_dir+'（已锁定，无需手写路径）';
+  const sid=$('scenario').value;
+  const scope=d.files.length===1?(d.rel_dir+'/'+d.files[0]):d.rel_dir;
+  if(sid==='clean'){
+    $('task').value='检查 '+scope+'，找出重复记录与缺失字段并生成清洗报告。';
+  }else{
+    $('task').value='把 '+scope+' 按最新市场行情完成填报，并检查结果。';
   }
 }
 
@@ -415,24 +453,8 @@ async function uploadReconcile(){
   const da=await doUpload(a), db=await doUpload(b);
   if(da.error||db.error){$('upmsg').textContent=(da.error||db.error);return;}
   $('upmsg').textContent='已上传 2 个文件';
+  uploaded=[da.rel,db.rel];
   $('task').value='核对 '+da.rel+'（原版/基准）与 '+db.rel+'（待核对），找出只在单方存在、字段不一致和重复的记录，生成差异报告。';
-}
-
-async function uploadSingle(){
-  const f=$('fileS').files[0];
-  if(!f){alert('请先选择 Excel 文件');return;}
-  $('upmsg').textContent='上传中…';
-  const d=await doUpload(f);
-  if(d.error){$('upmsg').textContent=d.error;return;}
-  $('upmsg').textContent='已上传：'+d.file;
-  const sid=$('scenario').value;
-  if(sid==='clean'){
-    $('task').value='检查 '+d.rel+'，找出重复记录与缺失字段并生成清洗报告。';
-  }else if(sid==='quote_fill'){
-    $('task').value='把 '+d.rel+' 按最新市场行情完成填报，并检查结果。';
-  }else{
-    const t=$('task'); t.value=(t.value?t.value.trim()+' ':'')+d.rel;
-  }
 }
 
 function cls(s){return s.agent==='verifier'?'':(s.ok?'':'bad');}

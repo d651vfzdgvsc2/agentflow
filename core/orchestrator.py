@@ -64,6 +64,7 @@ class Orchestrator:
         approve_write: Callable[[str, dict], bool] | None = None,
         on_event: Callable[[dict], None] | None = None,
         run_id: str | None = None,
+        forced_files: list[str] | None = None,
     ) -> None:
         apply_compat(scenario)
 
@@ -90,6 +91,8 @@ class Orchestrator:
             )
             llm = BudgetedLLM(llm, self.budget)
         self.bb = Blackboard(task, scenario.id)
+        # 界面已上传并锁定的目标文件：规划阶段必须只处理这些，杜绝"猜路径"
+        self.bb.set("forced_files", [str(f) for f in (forced_files or [])])
         self.trace = Trace(on_event=on_event)
         self.ctx = AgentContext(
             task=task,

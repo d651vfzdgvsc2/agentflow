@@ -11,6 +11,7 @@ venv/
 data/backup/
 data/output/
 data/uploads/
+data/上传/
 storage/
 
 # 测试用报价表数据（如不需要版本管理可保留此忽略；如需提交示例数据则删掉此行）

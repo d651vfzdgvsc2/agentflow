@@ -28,6 +28,21 @@ def _resolve_path(name: str, base_dir: str | Path | None = None) -> Path:
     return p.resolve()
 
 
+def _resolve_dir(directory: str | Path) -> Path:
+    """解析目录：绝对路径直接用；相对路径先按当前工作目录，再按 data 目录。
+
+    这样 "data/报价表"（相对项目根）与 "上传/xxx"（相对 data）都能正确命中。
+    """
+    p = Path(directory)
+    if p.is_absolute():
+        return p
+    cwd_rel = Path.cwd() / p
+    if cwd_rel.exists():
+        return cwd_rel
+    data_rel = DEFAULT_DIR / p
+    return data_rel if data_rel.exists() else cwd_rel
+
+
 def _safe(value: Any) -> Any:
     """防公式注入：字符串若以 = + - @ 开头，加前导单引号强制按文本写入。
 
@@ -345,7 +360,7 @@ def scan_directory(directory: str | Path | None = None, max_preview_rows: int = 
 
     用于 Agent 规划阶段：了解"有哪些文件、每个文件什么结构"，不加载全量数据。
     """
-    base = Path(directory) if directory else DEFAULT_DIR
+    base = _resolve_dir(directory) if directory else DEFAULT_DIR
     if not base.exists() or not base.is_dir():
         return {"error": f"目录不存在: {base}"}
 

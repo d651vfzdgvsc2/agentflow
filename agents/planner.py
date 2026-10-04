@@ -55,7 +55,13 @@ class PlannerAgent(BaseAgent):
             example=example,
         )
 
+        forced = [str(f) for f in (ctx.blackboard.get("forced_files") or [])]
         user = ctx.task
+        if forced:
+            user += ("\n\n【本次处理范围已由界面上传确定，且仅限下列文件；"
+                     "请只对这些文件调用 inspect_excel/read_table 了解结构，"
+                     "不要扫描或处理其它目录、其它文件】\n"
+                     + "\n".join(f"- {f}" for f in forced))
         if feedback:
             lines = [f"- [{f.get('rule')}] {f.get('message')}"
                      for f in feedback if f.get("severity") in ("error", "warning")]
@@ -71,9 +77,13 @@ class PlannerAgent(BaseAgent):
 
         plan = extract_json(content or "") or {}
         discovered = self._collect_discovered_files(tool_log)
-        # 尊重用户对处理范围的限定：计划里若已指定目标文件，就不擅自扩大到扫描到的全部文件
-        planned = list(plan.get("target_files") or [])
-        files = planned or discovered
+        if forced:
+            # 上传即锁定：无论模型怎么想，目标文件只能是界面上传的那些
+            files = forced
+        else:
+            # 尊重用户对处理范围的限定：计划里若已指定目标文件，就不擅自扩大到扫描到的全部文件
+            planned = list(plan.get("target_files") or [])
+            files = planned or discovered
         plan["target_files"] = files
 
         # 补齐缺省字段，保证下游稳定
